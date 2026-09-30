@@ -70,6 +70,28 @@ module Shaka
                           (raise Shaka::Error, 'git is not on PATH')
     end
 
+    def with_requested_model(result)
+      @options[:model] ? result.merge('requested_model' => @options[:model]) : result
+    end
+
+    def validate!
+      %i[base head].each do |key|
+        unless @options[key].to_s.match?(LocalReviewEvidence::SHA)
+          raise Shaka::Error, "--#{key} must be a full commit SHA"
+        end
+      end
+      validate_review_environment!
+      validate_timeout!
+      validate_reviewer!
+      validate_model_name!
+      validate_checkout!
+    end
+
+    def validate_review_environment!
+      validate_tempdir!
+      validate_criteria_ref!
+    end
+
     def validate_tempdir!
       directory = File.realpath(Dir.tmpdir)
       raise Shaka::Error, 'Temporary reviewer directory is inside the candidate checkout' if
@@ -115,7 +137,7 @@ module Shaka
       return unless @options[:ledger]
 
       @ledger = LocalReviewLedger.new(@options[:ledger], root:)
-      @ledger.check_next!(base: @options[:base], head:)
+      @ledger.start!(base: @options[:base], head:, reviewer:)
       check_history! if @ledger.last_head
     end
 
@@ -123,9 +145,11 @@ module Shaka
     # fix must come after the head it was found in, or the comment would call a finding fixed in a
     # commit that is missing or predates it. Earlier rounds' fixes are already inside the last head.
     def check_history!
-      last = @ledger.last_head
+      last = @ledger.last_head == head ? @ledger.prior_head(head) : @ledger.last_head
+      return unless last
+
       contains!(last, head)
-      @ledger.last_round_fixes.each do |fix|
+      @ledger.last_round_fixes(last).each do |fix|
         raise Shaka::Error, "Fix #{fix} is the head round #{@ledger.rounds.size} reviewed; commit the fix." if
           fix == last
 
@@ -150,8 +174,9 @@ module Shaka
       round = result.slice('head', 'reviewer', 'report', 'prompt_source', 'criteria_ref', 'usage')
       # The routed model comes from native usage through `review record`, never from the request.
       round = round.merge('effort' => effort, 'requested_model' => @options[:model]).compact
-      @ledger.append!(base: @options[:base], round:)
-      result.merge('ledger' => @ledger.path, 'round' => @ledger.rounds.size)
+      validate_checkout!
+      number = @ledger.append!(base: @options[:base], round:)
+      result.merge('ledger' => @ledger.path, 'round' => number)
     end
 
     # Earlier rounds reach the reviewer as data: each finding's class and disposition, never the
@@ -159,13 +184,16 @@ module Shaka
     def prior_rounds(marker)
       return '' unless @ledger&.rounds&.any?
 
-      findings = @ledger.prior_findings.map(&:prompt_line)
-      commits = capture(git_executable, '-C', root, 'log', '--format=%h %s', "#{@ledger.last_head}..#{head}", '--')
+      previous = @ledger.prior_head(head)
+      return '' unless previous
+
+      findings = @ledger.prior_findings(head:).map(&:prompt_line)
+      commits = capture(git_executable, '-C', root, 'log', '--format=%h %s', "#{previous}..#{head}", '--')
       'PRIOR ROUNDS: Earlier local rounds reviewed this change. Confirm each fix below resolves its finding, ' \
         'and report it again with the same id if not. Do not raise documented findings again unless the ' \
         "change made them worse. Then review the full diff fresh.\n\n--- BEGIN PRIOR ROUND DATA #{marker} ---\n" \
         "Findings:\n#{findings.empty? ? 'none' : findings.join("\n")}\n\n" \
-        "Commits since #{@ledger.last_head}:\n#{commits}--- END PRIOR ROUND DATA #{marker} ---\n\n"
+        "Commits since #{previous}:\n#{commits}--- END PRIOR ROUND DATA #{marker} ---\n\n"
     end
   end
 
@@ -184,19 +212,15 @@ module Shaka
       validate_path!
       git_executable
       validate!
-      validate_tempdir!
       open_ledger
       with_requested_model(record_round(run_report(review_prompt)))
     rescue Shaka::Error, SystemCallError => e
       with_requested_model(setup_failure(e))
+    ensure
+      @ledger&.cancel!
     end
 
     private
-
-    # Records what was asked for on every outcome; the routed model comes only from native usage.
-    def with_requested_model(result)
-      @options[:model] ? result.merge('requested_model' => @options[:model]) : result
-    end
 
     def run_report(prompt)
       report = Tempfile.create(['shaka-review-', '.md'])
@@ -223,19 +247,6 @@ module Shaka
         @attempted = true
         LocalReviewCli.new(@options, root: neutral, report: report, candidate_root: root).run(prompt)
       end
-    end
-
-    def validate!
-      %i[base head].each do |key|
-        unless @options[key].to_s.match?(LocalReviewEvidence::SHA)
-          raise Shaka::Error, "--#{key} must be a full commit SHA"
-        end
-      end
-      validate_criteria_ref!
-      validate_timeout!
-      validate_reviewer!
-      validate_model_name!
-      validate_checkout!
     end
 
     # An unset MODEL variable must fail here, not launch the reviewer with an empty model.

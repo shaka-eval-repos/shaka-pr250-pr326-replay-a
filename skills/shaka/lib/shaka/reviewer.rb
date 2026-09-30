@@ -35,7 +35,9 @@ module Shaka
     private
 
     def selection
-      ReviewerSelection.new(reviewers: config.review[RepositoryConfig::ReviewSchema::LOCAL_REVIEW_AGENTS],
+      review = config.review
+      ReviewerSelection.new(count: @options.fetch(:count, review.fetch('local_review_count', 1)),
+                            reviewers: review[RepositoryConfig::ReviewSchema::LOCAL_REVIEW_AGENTS],
                             implementers: identities(:implementers, required: true),
                             unavailable: identities(:unavailable)).call
     end
@@ -56,9 +58,16 @@ module Shaka
         flags.banner = 'Usage: shaka reviewer --implementer PROVIDER/FAMILY [options]'
         flags.on('--root DIR', 'Repository root (default: current directory)') { |v| @options[:root] = v }
         flags.on('--ref REF', 'Read policy from this trusted Git commit') { |v| @options[:ref] = v }
+        flags.on('--count N', 'Positive reviewer count') { |value| @options[:count] = parse_count(value) }
         add_identity_options(flags)
         flags.on('-h', '--help', 'Show usage') { @options[:help] = true }
       end
+    end
+
+    def parse_count(value)
+      raise OptionParser::InvalidArgument, '--count must be a positive integer' unless value.match?(/\A[1-9]\d*\z/)
+
+      value.to_i
     end
 
     def add_identity_options(flags)

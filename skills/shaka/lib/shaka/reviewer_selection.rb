@@ -34,7 +34,15 @@ module Shaka
       { 'provider' => provider.strip, 'model_family' => family.strip }
     end
 
-    def initialize(reviewers:, implementers:, unavailable: [])
+    def self.count!(value)
+      return if value.is_a?(Integer) && value.positive?
+
+      raise Error, 'review.local_review_count / --count must be a positive integer'
+    end
+
+    def initialize(reviewers:, implementers:, unavailable: [], count: 1)
+      self.class.count!(count)
+      @count = count
       @reviewers = reviewers || []
       @implementers = implementers
       @unavailable = unavailable
@@ -71,10 +79,16 @@ module Shaka
       {
         'outcome' => outcome,
         'reviewer' => reviewer_for(outcome, selected),
+        'reviewers' => ordered_reviewers(reviewer_for(outcome, selected)),
         'implementation_providers' => providers,
         'considered' => reasons.map { |entry, why| { 'reviewer' => identity(entry), 'reason' => why } },
         'note' => note(outcome, selected)
       }
+    end
+
+    def ordered_reviewers(first)
+      remaining = @reviewers.reject { |entry| unavailable?(entry) }.map { |entry| identity(entry) }
+      [first, *remaining].uniq(&:downcase).first(@count)
     end
 
     def outcome_for(selected, reasons)
