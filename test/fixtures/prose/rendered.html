@@ -1,0 +1,44 @@
+<p>🤖 Claude Code · Anthropic · claude-opus-5-5 · xhigh</p>
+<p>The summary uses <code class="notranslate">&lt;details&gt;</code> in code. <strong>Reviewers</strong> see the code. iOS builds pass.</p>
+<p><a href="https://github.com/o/r/pull/1#pullrequestreview-1">Code Walkthrough</a></p>
+<h2>Heading words stay hidden</h2>
+
+
+<p>Example:</p>
+<pre class="notranslate"><code class="notranslate">&lt;details&gt;
+Indented code stays hidden.
+</code></pre>
+<markdown-accessiblity-table><table role="table">
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Table words stay hidden.</td>
+<td>pass</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<blockquote>
+<p>Quoted words stay hidden.</p>
+</blockquote>
+<ul>
+<li>Item one
+<ul>
+<li>Nested item</li>
+</ul>
+</li>
+<li>Item two with a <a href="https://example.com/hidden-address" rel="nofollow">link</a></li>
+</ul>
+<details>
+<summary>Usage</summary>
+<p>Collapsed words stay hidden.</p>
+<details>
+<summary>Inner</summary>
+<p>Nested collapsed words stay hidden.</p>
+</details>
+</details>
+<p>After details.</p>

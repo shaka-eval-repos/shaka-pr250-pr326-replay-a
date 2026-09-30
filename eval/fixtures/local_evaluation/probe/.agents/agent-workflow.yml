@@ -1,0 +1,5 @@
+---
+version: 1
+base_branch: main
+review: { required: none }
+merge: { preference: auto }

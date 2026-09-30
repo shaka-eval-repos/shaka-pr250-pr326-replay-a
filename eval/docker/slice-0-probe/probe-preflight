@@ -1,0 +1,86 @@
+#!/bin/sh
+set -eu
+
+target_repository=${1:-}
+expected_login=${2:-}
+docker_socket=${3:-/var/run/docker.sock}
+private_repository=
+
+fail() {
+  echo "probe-preflight: $1" >&2
+  exit 1
+}
+
+IFS= read -r private_repository || [ -n "$private_repository" ] || \
+  fail 'private sibling repository is required on stdin'
+
+valid_repository() {
+  case "$1" in
+    ''|.|..|./*|../*|*/.|*/..|*[!A-Za-z0-9_.\/-]*|/*|*/|*/*/*) return 1 ;;
+    */*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+valid_repository "$target_repository" || fail 'target repository must be OWNER/REPOSITORY'
+valid_repository "$private_repository" || fail 'private sibling repository must be OWNER/REPOSITORY'
+[ "${target_repository%%/*}" = "${private_repository%%/*}" ] || \
+  fail 'private sibling repository must have the same owner as the target repository'
+[ -n "$expected_login" ] || fail 'expected machine login is required'
+
+for variable in GH_TOKEN GITHUB_TOKEN SSH_AUTH_SOCK \
+  HTTP_PROXY HTTPS_PROXY FTP_PROXY NO_PROXY ALL_PROXY \
+  http_proxy https_proxy ftp_proxy no_proxy all_proxy; do
+  eval "value=\${$variable-}"
+  [ -z "$value" ] || fail "$variable must not be inherited"
+done
+
+[ ! -e "$HOME/.ssh" ] || fail 'an SSH home is available'
+[ ! -S "$docker_socket" ] || fail 'the Docker socket is available'
+
+actual_login=$(gh api user --jq .login) || fail 'machine identity is unreadable'
+actual_login=$(printf '%s' "$actual_login" | tr '[:upper:]' '[:lower:]')
+expected_login=$(printf '%s' "$expected_login" | tr '[:upper:]' '[:lower:]')
+[ "$actual_login" = "$expected_login" ] || fail 'authenticated GitHub identity is not the designated machine'
+echo 'identity=PASS'
+
+target_visibility=$(gh api "repos/$target_repository" --jq .visibility 2>/dev/null) || \
+  fail 'target repository is unavailable'
+[ "$target_visibility" = public ] || fail 'target repository is not public'
+echo 'target=PASS'
+
+GIT_TERMINAL_PROMPT=0 git ls-remote "https://github.com/$target_repository.git" >/dev/null 2>&1 || \
+  fail 'target repository is unavailable over HTTPS'
+echo 'target_https=PASS'
+
+if private_api_error=$(gh api "repos/$private_repository" 2>&1); then
+  fail 'the scoped PAT can read a private sibling through the API'
+fi
+case "$private_api_error" in
+  *'HTTP 404'*|*'Not Found'*) ;;
+  *) fail 'private sibling API denial was inconclusive' ;;
+esac
+echo 'private_api=DENIED'
+
+if private_git_error=$(GIT_TERMINAL_PROMPT=0 git ls-remote "https://github.com/$private_repository.git" 2>&1); then
+  fail 'the scoped PAT can clone a private sibling over HTTPS'
+fi
+case "$private_git_error" in
+  *'Repository not found'*) ;;
+  *) fail 'private sibling HTTPS denial was inconclusive' ;;
+esac
+echo 'private_https=DENIED'
+
+ssh_result=$(
+  ssh -F /dev/null -o BatchMode=yes -o IdentityAgent=none -o IdentitiesOnly=yes \
+    -o ConnectTimeout=10 \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null \
+    -T git@github.com 2>&1 || true
+)
+case "$ssh_result" in
+  *'successfully authenticated'*) fail 'an alternate GitHub SSH credential is available' ;;
+  *'Permission denied (publickey'*) ;;
+  *) fail 'GitHub SSH denial was inconclusive' ;;
+esac
+echo 'alternate_ssh=DENIED'
+echo 'preflight=PASS'

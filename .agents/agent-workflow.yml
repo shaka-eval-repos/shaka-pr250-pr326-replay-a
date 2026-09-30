@@ -1,0 +1,19 @@
+# Shaka settings for this repository. See docs/settings.md.
+---
+version: 1 # Configuration format, independent of the Shaka release version.
+repo_prefix: SHAKA
+review:
+  required: none
+  ci_review_wait: none
+  # Optional local reviewer preferences; see docs/settings.md.
+  local_review_agents:
+    - provider: anthropic
+      model_family: claude
+    - provider: openai
+      model_family: codex
+    - provider: xai
+      model_family: grok
+merge:
+  preference: ask
+branches:
+  name: '{login}-{host}/{issue}-{description}'

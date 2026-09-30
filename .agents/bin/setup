@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+unset RUBYOPT RUBYLIB
+export BUNDLE_GEMFILE="$root/Gemfile"
+cd "$root"
+exec bundle install

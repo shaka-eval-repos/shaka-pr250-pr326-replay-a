@@ -1,0 +1,17 @@
+# Public-safe predecessor shape modeled on React on Rails before its typed seam.
+# Omits private backends, license names, and secret inventories.
+---
+base_branch: main
+repo_prefix: ROR
+merge_submission:
+  mode: merge_queue_only
+hosted_ci_trigger: "PR labels and a repository helper start hosted CI. Decision rules stay in AGENTS.md."
+ci_change_detector: "A repository script inspects optimized suite routing."
+ci_parity_environment: "No dedicated local runner image. Reproduce CI-only failures from the workflow job."
+follow_up_prefix: "Follow-up:"
+changelog: "User-visible changes only. Taxonomy stays in AGENTS.md."
+merge_ledger: "A repository merge-readiness check records changelog classification."
+review_gate: "claude-review is the preferred independent review check; see AGENTS.md."
+approval_exempt: "Focused trusted-assignment edits still need validation and PR evidence."
+coordination_backend: "n/a"
+benchmark_labels: "opt-in benchmark labels on pull requests"

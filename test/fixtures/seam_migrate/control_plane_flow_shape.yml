@@ -1,0 +1,32 @@
+# Public-safe predecessor shape modeled on Control Plane Flow's retired GitHub-fact keys.
+---
+version: 1
+base_branch: main
+commands:
+  setup: .agents/bin/setup
+  validate: .agents/bin/validate
+  test: .agents/bin/test
+review:
+  required: none
+  reviewers:
+    - provider: anthropic
+      model_family: claude
+    - provider: openai
+      model_family: codex
+merge:
+  preference: ask
+  method: squash
+  release: explicit_approval
+protection:
+  required_checks:
+    - Example Check
+  direct_push: false
+  force_push: false
+  branch_deletion: false
+branches:
+  name: "{login}-{host}/{issue}-{description}"
+recovery:
+  workspace_path: false
+trusted_actions:
+  - actions/checkout
+  - example/review-action

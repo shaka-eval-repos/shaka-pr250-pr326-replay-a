@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+source_directory=${1:-/seed/probe}
+destination=${2:-/workspace/repo}
+
+case "$destination" in
+  */repo) ;;
+  *)
+    echo 'probe-reset: destination must end in /repo' >&2
+    exit 2
+    ;;
+esac
+
+if [ ! -d "$source_directory" ]; then
+  echo 'probe-reset: fixture source is unavailable' >&2
+  exit 2
+fi
+
+if find "$source_directory" -type l -print -quit | grep -q .; then
+  echo 'probe-reset: fixture source contains a symlink' >&2
+  exit 2
+fi
+
+rm -rf -- "$destination"
+workspace_directory=${destination%/repo}
+[ -n "$workspace_directory" ] || workspace_directory=/
+mkdir -p -- "$destination" "$workspace_directory/tmp"
+(cd "$source_directory" && tar -cf - .) | (cd "$destination" && tar -xf -)
+
+test -f "$destination/.ruby-version"
+diff -qr "$source_directory" "$destination" >/dev/null
+echo 'probe-reset: PASS'

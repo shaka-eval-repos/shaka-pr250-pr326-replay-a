@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative '../skills/shaka/lib/shaka/ruby_requirement'
+
+require 'optparse'
+require_relative '../skills/shaka/lib/shaka/installer'
+
+skills_dir = nil
+managed_dir = nil
+rollback = nil
+with_rct = false
+with_claude_towers = false
+parser = OptionParser.new do |options|
+  options.banner = 'Usage: bin/install --skills-dir DIR [--managed-dir DIR] [--with-rct] [--with-claude-towers]'
+  options.on('--skills-dir DIR', 'Explicit host skills directory') { |value| skills_dir = value }
+  options.on('--managed-dir DIR', 'Durable directory for copied packages') { |value| managed_dir = value }
+  options.on('--with-rct', 'Also install the Codex repository control tower') { with_rct = true }
+  options.on('--with-claude-towers', 'Also install the Claude Code control towers') { with_claude_towers = true }
+  options.on('--rollback PACKAGE_ID', 'Switch to a previous managed copy') { |value| rollback = value }
+  options.on('-h', '--help', 'Show this help') do
+    puts options
+    exit
+  end
+end
+
+begin
+  parser.parse!
+  raise OptionParser::MissingArgument, '--skills-dir DIR' if skills_dir.nil?
+  raise OptionParser::InvalidArgument, 'DIR must not be empty' if skills_dir.strip.empty?
+  raise OptionParser::InvalidArgument, 'managed DIR must not be empty' if managed_dir&.strip == ''
+  raise OptionParser::InvalidArgument, ARGV.join(' ') unless ARGV.empty?
+
+  names = ['shaka']
+  names << 'rct' if with_rct
+  names.push('mct-claude', 'rct-claude') if with_claude_towers
+  invoked_root = File.expand_path('..', File.dirname($PROGRAM_NAME))
+  resolved_root = File.expand_path('..', __dir__)
+  source_root = File.realpath(invoked_root) == resolved_root ? invoked_root : resolved_root
+  Shaka::Installer.new(source_root: source_root, skills_dir: skills_dir,
+                       names: names, rollback: rollback, managed_dir: managed_dir).run
+rescue OptionParser::ParseError, SystemCallError, IOError, ArgumentError => e
+  warn e.message
+  exit 1
+end

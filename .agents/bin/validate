@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+base=${SHAKA_BASE_REF:-origin/main}
+comparison=$(git -C "$root" merge-base "$base" HEAD 2>/dev/null || true)
+classifier=$(mktemp)
+trap 'rm -f "$classifier"' EXIT
+if git -C "$root" show "${base}:bin/docs-only-change" >"$classifier" 2>/dev/null &&
+   chmod +x "$classifier" && (cd "$root" && "$classifier" "$base"); then
+  git -C "$root" diff --check "$comparison" HEAD --
+  git -C "$root" diff --cached --check HEAD --
+  git -C "$root" diff --check --
+  inventory=$(mktemp)
+  output=$(mktemp)
+  errors=$(mktemp)
+  trap 'rm -f "$classifier" "$inventory" "$output" "$errors"' EXIT
+  git -C "$root" ls-files --others --exclude-standard -z >"$inventory"
+  while IFS= read -r -d '' path; do
+    status=0
+    : >"$output"
+    : >"$errors"
+    git -C "$root" diff --no-index --check /dev/null "$path" >"$output" 2>"$errors" || status=$?
+    cat "$output"
+    if [[ "$status" -gt 1 ]]; then
+      cat "$errors" >&2
+      exit "$status"
+    elif [[ -s "$errors" ]]; then
+      cat "$errors" >&2
+      exit 1
+    fi
+  done <"$inventory"
+  exit 0
+fi
+
+unset RUBYOPT RUBYLIB
+export BUNDLE_GEMFILE="$root/Gemfile"
+exec "$root/bin/validate" "$@"

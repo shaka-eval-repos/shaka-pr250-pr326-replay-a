@@ -1,0 +1,169 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'optparse'
+require 'open3'
+require 'io/console'
+require_relative '../lib/shaka/evaluation/probe_container'
+
+options = {}
+parser = OptionParser.new do |flags|
+  flags.banner = 'Usage: slice-0-probe-container COMMAND NAME [TARGET LOGIN] [options]'
+  flags.on('--trusted-skill PATH', 'Installed Shaka skill outside the candidate checkout') do |path|
+    options[:trusted_skill] = path
+  end
+end
+
+def run!(*command)
+  return if system(*command)
+
+  raise "Command failed: #{command.first} #{command[1]}"
+end
+
+def capture!(*command)
+  stdout, _stderr, status = Open3.capture3(*command)
+  raise "Command failed: #{command.first} #{command[1]}" unless status.success?
+
+  stdout.strip
+end
+
+def run_with_stdin!(input, *command)
+  status = Open3.popen2e(*command) do |stdin, output, wait|
+    stdin.write(input)
+    stdin.close
+    IO.copy_stream(output, $stdout)
+    wait.value
+  end
+  raise "Command failed: #{command.first} #{command[1]}" unless status.success?
+end
+
+def clean(container, name)
+  container.cleanup_commands(name).each do |command|
+    _stdout, stderr, status = Open3.capture3(*command)
+    next if status.success? || stderr.include?('No such container')
+
+    raise "Container cleanup failed: #{stderr.lines.first&.strip || 'unknown Docker error'}"
+  end
+end
+
+def clean_after_failure(container, name, operation_error)
+  clean(container, name)
+rescue StandardError => e
+  raise unless operation_error
+
+  warn e.message
+end
+
+def read_terminal_secret
+  value = $stdin.noecho do |input|
+    $stderr.print 'Scoped PAT: '
+    input.gets
+  end
+  $stderr.puts
+  value
+end
+
+def read_secret
+  value = $stdin.tty? ? read_terminal_secret : $stdin.read
+  value = value.to_s.strip
+  raise 'Scoped PAT is required on stdin' if value.empty?
+
+  value
+end
+
+def exists?(*command)
+  system(*command, out: File::NULL, err: File::NULL)
+end
+
+def observed_container_owner(container, name)
+  stdout, _stderr, status = Open3.capture3(*container.container_owner_command(name))
+  stdout.strip if status.success?
+rescue StandardError
+  nil
+end
+
+def reconcile_container_ownership(container, name, ownership)
+  3.times do |attempt|
+    observed = observed_container_owner(container, name)
+    return observed == ownership unless observed.nil?
+
+    sleep 0.1 if attempt < 2
+  end
+  nil
+end
+
+begin
+  parser.parse!(ARGV)
+  command, name, target, login = ARGV
+  raise OptionParser::InvalidArgument, parser.to_s unless command && name
+
+  root = File.expand_path('../..', __dir__)
+  trusted_skill = options[:trusted_skill]
+  container = Shaka::Evaluation::ProbeContainer.new(root:, trusted_skill:)
+
+  case command
+  when 'session'
+    raise OptionParser::MissingArgument, '--trusted-skill' unless options[:trusted_skill]
+    raise OptionParser::InvalidArgument, parser.to_s unless ARGV.length == 2
+
+    owned = false
+    operation_error = nil
+    begin
+      ownership = Process.pid.to_s
+      create_command = container.create_command(name, ownership:)
+      raise 'Refusing to replace an existing probe container' if exists?(*container.container_inspect_command(name))
+
+      run!(*container.build_command)
+      begin
+        run!(*create_command)
+        owned = true
+      rescue StandardError, Interrupt
+        ownership_match = reconcile_container_ownership(container, name, ownership)
+        owned = ownership_match == true
+        warn 'Container ownership could not be reconciled; manual cleanup may be required' if ownership_match.nil?
+        raise
+      end
+      run!(*container.start_command(name))
+      run!(*container.prepare_command(name))
+      warn 'probe container ready; authenticate and preflight from a second terminal'
+      run!(*container.shell_command(name))
+    rescue StandardError, Interrupt => e
+      operation_error = e
+      raise
+    ensure
+      clean_after_failure(container, name, operation_error) if owned
+    end
+  when 'auth'
+    raise OptionParser::InvalidArgument, parser.to_s unless ARGV.length == 2
+
+    token = read_secret << "\n"
+    begin
+      run_with_stdin!(token, *container.auth_command(name))
+    ensure
+      token.clear
+    end
+    run!(*container.git_auth_command(name))
+  when 'preflight'
+    raise OptionParser::InvalidArgument, parser.to_s unless ARGV.length == 4
+
+    private_repository = $stdin.read.strip
+    owner_login = capture!(*container.owner_identity_command)
+    visibility = capture!(*container.owner_repository_command(private_repository))
+    raise 'Owner-side GitHub identity must differ from the machine identity' if owner_login.casecmp?(login)
+    raise 'Owner could not verify that the sibling repository is private' unless visibility == 'private'
+    unless exists?(*container.owner_membership_command(target:, login:))
+      raise 'Owner could not verify active organization membership for the machine identity'
+    end
+
+    run_with_stdin!("#{private_repository}\n", *container.preflight_command(name, target:, login:))
+  when 'cleanup'
+    raise OptionParser::InvalidArgument, parser.to_s unless ARGV.length == 2
+
+    clean(container, name)
+  else
+    raise OptionParser::InvalidArgument, parser.to_s
+  end
+rescue StandardError => e
+  warn e.message
+  exit 1
+end

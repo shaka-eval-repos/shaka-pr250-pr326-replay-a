@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base=${1:-${SHAKA_BASE_REF:-origin/main}}
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 1
+cd "$root"
+git rev-parse --verify "${base}^{commit}" >/dev/null 2>&1 || exit 1
+comparison=$(git merge-base "$base" HEAD 2>/dev/null) || exit 1
+
+inventory=$(mktemp)
+trap 'rm -f -- "$inventory"' EXIT
+git diff --name-only --no-renames -z "$comparison" HEAD -- > "$inventory"
+git diff --cached --name-only --no-renames -z "$comparison" -- >> "$inventory"
+git diff --name-only --no-renames -z -- >> "$inventory"
+git ls-files --others --exclude-standard -z >> "$inventory"
+
+paths=()
+while IFS= read -r -d '' path; do
+  paths+=("$path")
+done < "$inventory"
+
+((${#paths[@]} > 0)) || exit 1
+
+for path in "${paths[@]}"; do
+  case "$path" in
+    README.md | docs/*.md) ;;
+    *) exit 1 ;;
+  esac
+
+  unmerged=$(git ls-files -u -- "$path")
+  [[ -z "$unmerged" ]] || exit 1
+  base_mode=$(git ls-tree "$comparison" -- "$path" | awk 'NR == 1 { print $1 }')
+  [[ -z "$base_mode" || "$base_mode" == 100644 ]] || exit 1
+  head_mode=$(git ls-tree HEAD -- "$path" | awk 'NR == 1 { print $1 }')
+  [[ -z "$head_mode" || "$head_mode" == 100644 ]] || exit 1
+  mode=$(git ls-files -s -- "$path" | awk 'NR == 1 { print $1 }')
+  [[ -z "$mode" || "$mode" == 100644 ]] || exit 1
+  [[ ! -L "$path" ]] || exit 1
+  [[ ! -e "$path" || (-f "$path" && ! -L "$path" && ! -x "$path") ]] || exit 1
+done
+
+printf 'Documentation-only change; Ruby tests and RuboCop are not needed.\n'

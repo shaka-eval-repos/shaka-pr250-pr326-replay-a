@@ -1,0 +1,19 @@
+# Whose public GitHub comments Shaka may read.
+# Comments cannot authorize merging, policy changes, or access to credentials.
+# Configuration and limits: skills/shaka/references/public-comments-safety.md
+trusted_users:
+  - justin808
+
+# Bot entries are base bot names. GitHub API logins usually include the
+# `[bot]` suffix; humans with the same base login are not trusted by this list.
+trusted_bots:
+  - coderabbitai
+  - claude
+  - chatgpt-codex-connector
+  - cursor
+
+trusted_metadata_bots: []
+# Team lookups need a token that can read membership. Without that access,
+# comments may be withheld or a larger discussion read may stop.
+trusted_teams:
+  - shakacode/shakacode

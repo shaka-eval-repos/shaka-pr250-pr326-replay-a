@@ -1,0 +1,54 @@
+name: Validate
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect documentation-only changes
+        id: changes
+        env:
+          SHAKA_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          if ! comparison=$(git merge-base "$SHAKA_BASE_REF" HEAD 2>/dev/null); then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          trusted_classifier="$RUNNER_TEMP/docs-only-change"
+          if git show "${SHAKA_BASE_REF}:bin/docs-only-change" > "$trusted_classifier"; then
+            chmod +x "$trusted_classifier"
+            if "$trusted_classifier" "$SHAKA_BASE_REF"; then
+              git diff --check "$comparison" --
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+
+      - name: Report documentation-only validation
+        if: steps.changes.outputs.docs_only == 'true'
+        run: echo "Documentation-only change; Ruby tests and RuboCop skipped."
+
+      - uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # v1
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: bin/validate

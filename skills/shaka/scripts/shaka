@@ -1,0 +1,43 @@
+#!/bin/sh
+# Starts the Shaka helper with Shaka's own Ruby, whatever Ruby the current project selects.
+# SHAKA_RUBY wins. An installed package then uses the Ruby that ran bin/install, recorded
+# beside the packages. A source checkout uses `ruby` from PATH. The helper needs only Ruby's
+# standard library, so Ruby starts without RUBYOPT or installed gems, which keeps a project's
+# Bundler setup and gem paths out. The environment itself is unchanged, because `shaka work`
+# hands it to the coding agent, whose project commands still need those settings.
+# Only shell builtins and the system readlink run before Ruby, so a project's PATH cannot
+# substitute a command here. Ruby preloads the version check, which older Rubies can parse.
+
+readlink=/usr/bin/readlink
+[ -x "$readlink" ] || readlink=/bin/readlink
+script=$0
+while [ -L "$script" ]; do
+  target=$("$readlink" "$script")
+  case $target in
+    /*) script=$target ;;
+    *) script=${script%/*}/$target ;;
+  esac
+done
+case $script in
+  */*) scripts=${script%/*} ;;
+  *) scripts=. ;;
+esac
+# Ruby looks up a relative -r path in its load path, so this must be absolute. It stays
+# logical rather than physical: the helper reads its invoked path to find the host skill link.
+scripts=$(CDPATH='' cd -- "$scripts" && pwd)
+
+ruby=${SHAKA_RUBY:-}
+package=$(CDPATH='' cd -P -- "$scripts/../../.." && pwd -P)
+# An installed package never falls back to PATH: that would be the project's Ruby.
+if [ -z "$ruby" ] && [ -f "$package/.shaka-install.json" ]; then
+  if [ -f "$package/../.shaka-ruby" ]; then
+    IFS= read -r ruby < "$package/../.shaka-ruby" || true
+  fi
+  if [ ! -x "$ruby" ]; then
+    echo "Shaka cannot run the Ruby it was installed with (${ruby:-no record found})." \
+      "Rerun bin/install with Ruby 3.4, or set SHAKA_RUBY to a Ruby 3.4 interpreter." >&2
+    exit 1
+  fi
+fi
+
+exec "${ruby:-ruby}" --disable-gems --disable-rubyopt -r "$scripts/../lib/shaka/ruby_requirement.rb" "$scripts/shaka.rb" "$@"
