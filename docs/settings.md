@@ -173,6 +173,27 @@ every mode. A task can increase the wait, but cannot lower the repository minimu
 The agent counts verified reports. The merge helper permits optional pending
 checks (`UNSTABLE`) for `none` and `one`; `all` requires `CLEAN`.
 
+## `review.local_review_count`
+
+**Optional.** A positive integer, default **1**. Set it to **2**, for example,
+to ask two available reviewers to examine the same committed change before
+collecting their findings into one repair batch.
+
+The first reviewer keeps the existing provider preference and fresh-context
+fallback. Additional reviewers follow the configured order, skipping unavailable
+or already selected identities. If fewer are available, selection returns fewer;
+it does not invent reviewers to fill the count. Existing single-reviewer setups
+continue unchanged.
+
+Each reviewer adds a process and its provider's token cost. Concurrent execution
+can reduce waiting, but does not reduce those costs. Choose models and effort in
+[the reviewer list](#reviewlocal_review_agents). Findings may overlap and still
+need a disposition for each report. Review quality and time savings depend on
+the change; neither is established by selecting more reviewers.
+
+See [the batch procedure](../skills/shaka/references/local-review.md#review-one-head-with-several-reviewers)
+for concurrency, failure handling, and publication. Merge authority stays unchanged.
+
 ## `review.local_review_agents`
 
 **Optional.** Ordered reviewer preferences, not required local installations.

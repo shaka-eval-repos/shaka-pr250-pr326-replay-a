@@ -1,18 +1,21 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'securerandom'
 require_relative '../error'
 require_relative 'evidence'
 require_relative 'finding'
+require_relative 'ledger_storage'
+require_relative 'ledger_guards'
 
 module Shaka
-  # Private record of a local review loop: each round's commit, reviewer settings, report, and
-  # what became of its findings. It stays outside the checkout until `review publish` renders it,
-  # and it has the same shape as that command's content file.
+  # One private ledger, with contiguous batches of reviews against the same head.
   class LocalReviewLedger
+    include LocalReviewLedgerStorage
+    include LocalReviewLedgerGuards
+
     attr_reader :path
 
-    # Only `review run` can start a ledger, so only it needs the checkout to keep the ledger out of.
     def initialize(path, root: nil)
       @path = File.expand_path(path)
       directory = File.realpath(File.dirname(@path))
@@ -22,91 +25,88 @@ module Shaka
 
     def rounds = data.fetch('rounds')
 
-    def last_round_fixes
-      LocalReviewFinding.list(rounds.last['findings'], "round #{rounds.size} finding").select(&:fixed?).map(&:commit)
+    def last_round_fixes(reviewed_head = last_head)
+      rounds.select { |round| round['head'] == reviewed_head }.flat_map do |round|
+        LocalReviewFinding.list(round['findings'], 'batch finding').select(&:fixed?).map(&:commit)
+      end.uniq
     end
 
     def last_head = rounds.last&.fetch('head')
 
-    # A round reviews a new commit on the same base, after the previous round's findings are recorded.
-    def check_next!(base:, head:)
+    def prior_head(head) = rounds.reverse.find { |round| round['head'] != head }&.fetch('head')
+
+    def check_next!(base:, head:, reviewer: nil)
+      raise Error, "The ledger's rounds measure the change against #{data['base']}; use a new ledger." if
+        data['base'] && data['base'] != base
+
+      check_pending!(head, reviewer)
       return if rounds.empty?
 
-      raise Error, "The ledger's rounds measure the change against #{data['base']}; use a new ledger." unless
-        data['base'] == base
+      check_new_head!(head, reviewer)
+      return if head == last_head
 
-      check_new_head!(head)
-      return if recorded?(rounds.last)
-
-      raise Error, "Record round #{rounds.size}'s findings with `shaka review record` before the next round."
+      check_dispositions!
     end
 
-    # The newest disposition of every finding so far, keyed by the id rounds share.
-    def prior_findings
-      rounds.each_with_index.with_object({}) do |(round, index), latest|
+    # Reserve before launching; a peer still running prevents a new head from starting.
+    def start!(base:, head:, reviewer:)
+      locked do
+        check_next!(base:, head:, reviewer:)
+        @reservation = SecureRandom.hex(16)
+        pending = data.fetch('pending', []) + [{ 'head' => head, 'reviewer' => reviewer, 'token' => @reservation }]
+        write(data.merge('base' => base, 'pending' => pending))
+      end
+    end
+
+    def cancel!
+      return unless @reservation
+
+      locked { write(data.merge('pending' => pending_without_reservation)) }
+      @reservation = nil
+    end
+
+    # Current-head reports never enter a peer's prompt. Keep colliding reviewer finding IDs distinct.
+    def prior_findings(head: nil)
+      rounds.reject { |round| round['head'] == head }.each_with_index.with_object({}) do |(round, index), latest|
         LocalReviewFinding.list(round['findings'], "round #{index + 1} finding").each do |finding|
-          latest[finding.id] = finding
+          latest[[round['reviewer'].downcase, finding.id]] = finding
         end
       end.values
     end
 
     def append!(base:, round:)
-      write(data.merge('base' => base, 'rounds' => rounds + [round]))
+      snapshot = data
+      locked do
+        check_reservation!
+        check_snapshot!(snapshot, round.fetch('head'))
+        check_next!(base:, head: round.fetch('head'), reviewer: round.fetch('reviewer'))
+        write(data.merge('base' => base, 'rounds' => rounds + [round], 'pending' => pending_without_reservation))
+        @reservation = nil
+        rounds.size
+      end
     end
 
-    # Sets the last round's findings and any usage the host reported for it.
-    def record!(content)
+    # A numbered round keeps concurrent peer appends from redirecting a disposition.
+    def record!(content, number: nil)
       raise Error, 'Record content must be an object.' unless content.is_a?(Hash)
 
-      round = last_round.merge(content.slice('findings', 'model', 'tokens', 'cost', 'estimate'))
-      check_findings!(round, rounds.size)
-      write(data.merge(content.slice('fallback'), 'rounds' => rounds[0...-1] + [round]))
+      snapshot = data
+      index = (number || rounds.size) - 1
+      original = rounds[index] || raise(Error, 'The ledger has no round to record.')
+      locked { update_record!(content, snapshot, original, index) }
     end
 
     private
 
-    def data
-      @data ||= if File.exist?(@path)
-                  parsed = JSON.parse(File.read(@path, encoding: 'UTF-8'))
-                  raise Error, "#{@path} is not a review ledger." unless
-                    parsed.is_a?(Hash) && parsed['rounds'].is_a?(Array)
+    def update_record!(content, snapshot, original, index)
+      check_record_snapshot!(snapshot, original, index)
 
-                  parsed
-                else
-                  { 'rounds' => [] }
-                end
-    end
-
-    def last_round = rounds.last || raise(Error, 'The ledger has no round to record.')
-
-    def check_new_head!(head)
-      reviewed = rounds.index { |round| round['head'] == head }
-      raise Error, "Round #{reviewed + 1} already reviewed #{head}; commit the fix first." if reviewed
-    end
-
-    def recorded?(round) = round.key?('findings') || reported_count(round).zero?
-
-    # The count check keeps a finding from dropping out between the report and the comment.
-    def check_findings!(round, number)
-      findings = LocalReviewFinding.list(round['findings'], "round #{number} finding")
-      reported = reported_count(round)
-      return if findings.size == reported
-
-      raise Error, "Round #{number}'s report counts #{reported} findings; #{findings.size} were recorded."
-    end
-
-    def reported_count(round)
-      match = File.read(round.fetch('report'), encoding: 'UTF-8').match(LocalReviewEvidence::CLOSING)
-      raise Error, "Round report #{round['report']} has no FINDINGS count." unless match
-
-      match[2].to_i
-    end
-
-    def write(content)
-      temporary = "#{@path}.#{Process.pid}.tmp"
-      File.write(temporary, "#{JSON.pretty_generate(content)}\n", perm: 0o600)
-      File.rename(temporary, @path)
-      @data = content
+      round = original.merge(content.slice('findings', 'model', 'tokens', 'cost', 'estimate'))
+      check_findings!(round, index + 1)
+      updated = rounds.dup
+      updated[index] = round
+      write(data.merge(content.slice('fallback'), 'rounds' => updated))
+      index + 1
     end
   end
 end
